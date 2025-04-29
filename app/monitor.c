@@ -1,4 +1,4 @@
-/*  simple_monitor.c  –  lean RSI telemetry reader
+/*  monitor.c  –  lean RSI telemetry reader
 *
 *  Build   (mac / Linux) :  gcc simple_monitor.c ../src/kuka_rsi.c -I../include -o monitor -pthread
 *  Build   (Windows)     :  cl /EHsc simple_monitor.c ..\src\kuka_rsi.c /I..\include ws2_32.lib
