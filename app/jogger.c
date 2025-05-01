@@ -9,7 +9,6 @@
 #   include <windows.h>
 #   define KBHIT()      _kbhit()
 #   define GETCH()      _getch()
-#   define SLEEP_MS(ms) Sleep(ms)
 #else
 #   include <unistd.h>
 #   include <termios.h>
@@ -105,7 +104,7 @@ int main(void)
         return 1;
     }
 
-    const double STEP = 5.0;
+    const double STEP = 0.1;
     RSI_CartesianCorrection corr;
     zero_correction(&corr);
     RSI_CartesianPosition pos = {0};
@@ -121,22 +120,51 @@ int main(void)
 
         if (KBHIT()) {
             int ch = GETCH();
+            // Log key press to terminal
+            printf("\nKey pressed: %d (ASCII: '%c')\n",
+                    ch, (ch >= 32 && ch <= 126) ? (char)ch : ' ');
+
             switch (ch) {
-                case 'w': corr.z += STEP; break;
-                case 's': corr.z -= STEP; break;
-                case 'a': corr.x -= STEP; break;
-                case 'd': corr.x += STEP; break;
-                case 'q': corr.y -= STEP; break;
-                case 'e': corr.y += STEP; break;
-                case ' ': zero_correction(&corr); break;
-                case 27:  g_exit = true; break; // Esc
-                default: break;
+                case 'w':
+                    printf("Command: Move +Z (%.1f mm)\n", STEP);
+                corr.z += STEP;
+                break;
+                case 's':
+                    printf("Command: Move -Z (%.1f mm)\n", STEP);
+                corr.z -= STEP;
+                break;
+                case 'a':
+                    printf("Command: Move -X (%.1f mm)\n", STEP);
+                corr.x -= STEP;
+                break;
+                case 'd':
+                    printf("Command: Move +X (%.1f mm)\n", STEP);
+                corr.x += STEP;
+                break;
+                case 'q':
+                    printf("Command: Move -Y (%.1f mm)\n", STEP);
+                corr.y -= STEP;
+                break;
+                case 'e':
+                    printf("Command: Move +Y (%.1f mm)\n", STEP);
+                corr.y += STEP;
+                break;
+                case ' ':
+                    printf("Command: Zero correction\n");
+                zero_correction(&corr);
+                break;
+                case 27:
+                    printf("Command: Exit program\n");
+                g_exit = true;
+                break; // Esc
+                default:
+                    printf("Unhandled key: %d\n", ch);
+                break;
             }
         }
 
         RSI_SetCartesianCorrection(&corr);
         zero_correction(&corr);
-        SLEEP_MS(4);
     }
 
     puts("\nStopping …");
