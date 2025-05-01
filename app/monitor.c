@@ -1,12 +1,3 @@
-/*  monitor.c  –  lean RSI telemetry reader
-*
-*  Build   (mac / Linux) :  gcc simple_monitor.c ../src/kuka_rsi.c -I../include -o monitor -pthread
-*  Build   (Windows)     :  cl /EHsc simple_monitor.c ..\src\kuka_rsi.c /I..\include ws2_32.lib
-*
-*  Run                  :  ./monitor          # waits for robot to connect
-*  Stop                 :  Ctrl-C
-*/
-
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
@@ -25,29 +16,49 @@
 static volatile bool g_exit = false;
 static void on_signal(int sig) { (void)sig; g_exit = true; }
 
+/**
+ * Mandatory callback for RSI data.
+ * Even if unused, it must be registered to return IPOC every 4ms.
+ */
+static void on_data_callback(const RSI_CartesianPosition* cart,
+                             const RSI_JointPosition* joint,
+                             void* user_data) {
+    // Optional: could use this callback to log, analyze, or stream data
+    // For now, do nothing. It's just required to complete the handshake.
+    (void)cart;
+    (void)joint;
+    (void)user_data;
+}
+
 /* -------------------------------------------------------------------------- */
 int main(void)
 {
-    /* 1.- basic library config -------------------------------------------- */
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
 
     RSI_Config cfg = {0};
-    cfg.local_ip   = "0.0.0.0";      /* listen on all NICs              */
-    cfg.local_port = 59152;          /* KUKA’s default RSI port         */
-    cfg.timeout_ms = 1000;           /* connection-lost watchdog        */
-    cfg.verbose    = false;          /* silence library’s own prints    */
+    cfg.local_ip   = "0.0.0.0";    // listen on all interfaces
+    cfg.local_port = 59152;        // KUKA RSI default port
+    cfg.timeout_ms = 1000;         // timeout if no data
+    cfg.verbose    = false;        // disable debug output
 
     if (RSI_Init(&cfg) != RSI_SUCCESS) {
         fprintf(stderr,"RSI_Init failed\n"); return 1;
     }
-    if (RSI_Start()   != RSI_SUCCESS) {
-        fprintf(stderr,"RSI_Start failed\n"); RSI_Cleanup(); return 1;
+
+    // Register mandatory callback
+    if (RSI_SetCallbacks(on_data_callback, NULL, NULL) != RSI_SUCCESS) {
+        fprintf(stderr, "RSI_SetCallbacks failed\n");
+        RSI_Cleanup(); return 1;
+    }
+
+    if (RSI_Start() != RSI_SUCCESS) {
+        fprintf(stderr,"RSI_Start failed\n");
+        RSI_Cleanup(); return 1;
     }
 
     puts("RSI monitor ready …  (Ctrl-C to quit)");
 
-    /* 2.- live polling loop ----------------------------------------------- */
     RSI_CartesianPosition cart = {0};
     RSI_JointPosition     joint = {0};
     RSI_Statistics        stats = {0};
@@ -55,11 +66,10 @@ int main(void)
 
     while (!g_exit)
     {
-        if (   RSI_GetCartesianPosition(&cart) == RSI_SUCCESS
-            && RSI_GetJointPosition(&joint)   == RSI_SUCCESS
-            && RSI_GetStatistics(&stats)      == RSI_SUCCESS)
+        if (RSI_GetCartesianPosition(&cart) == RSI_SUCCESS &&
+            RSI_GetJointPosition(&joint)   == RSI_SUCCESS &&
+            RSI_GetStatistics(&stats)      == RSI_SUCCESS)
         {
-            /* only print when IPOC increments – keeps console readable */
             if (cart.ipoc != last_ipoc) {
                 last_ipoc = cart.ipoc;
 
@@ -81,10 +91,9 @@ int main(void)
             }
         }
 
-        SLEEP_MS(10);          /* -- 100 Hz console refresh            */
+        SLEEP_MS(10);  // Poll at ~100 Hz
     }
 
-    /* 3.- shutdown --------------------------------------------------------- */
     puts("\nStopping …");
     RSI_Stop();
     RSI_Cleanup();
