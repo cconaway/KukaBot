@@ -9,22 +9,20 @@ include_directories(include)
 
 # Source files
 set(RSI_SOURCES
-    src/kuka_rsi.c
+        src/kuka_rsi.c
 )
 
 # Common dependencies for Windows or Unix
 if (WIN32)
-    set(PLATFORM_LIBS ws2_32)
+    set(PLATFORM_LIBS ws2_32 winmm)
 else()
     set(PLATFORM_LIBS pthread)
 endif()
 
 # === MONITOR APP ===
 add_executable(monitor
-    app/monitor.c
-    ${RSI_SOURCES}
+        app/monitor.c
+        ${RSI_SOURCES}
 )
 
 target_link_libraries(monitor ${PLATFORM_LIBS})
-
-

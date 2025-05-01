@@ -40,20 +40,58 @@ int main(void)
     cfg.local_ip   = "0.0.0.0";    // listen on all interfaces
     cfg.local_port = 59152;        // KUKA RSI default port
     cfg.timeout_ms = 1000;         // timeout if no data
-    cfg.verbose    = false;        // disable debug output
+    cfg.verbose    = true;         // ENABLE verbose debug output
+
+    printf("Initializing RSI with configuration:\n");
+    printf("  Local IP: %s\n", cfg.local_ip);
+    printf("  Local Port: %d\n", cfg.local_port);
+    printf("  Timeout: %d ms\n", cfg.timeout_ms);
+    printf("  Verbose mode: %s\n", cfg.verbose ? "Enabled" : "Disabled");
 
     if (RSI_Init(&cfg) != RSI_SUCCESS) {
-        fprintf(stderr,"RSI_Init failed\n"); return 1;
+        fprintf(stderr, "RSI_Init failed\n"); return 1;
     }
+    printf("RSI initialized successfully\n");
 
     // Register mandatory callback
+    printf("Registering callbacks...\n");
     if (RSI_SetCallbacks(on_data_callback, NULL, NULL) != RSI_SUCCESS) {
         fprintf(stderr, "RSI_SetCallbacks failed\n");
         RSI_Cleanup(); return 1;
     }
+    printf("Callbacks registered successfully\n");
 
-    if (RSI_Start() != RSI_SUCCESS) {
-        fprintf(stderr,"RSI_Start failed\n");
+    printf("Starting RSI communication...\n");
+    RSI_Error err = RSI_Start();
+    if (err != RSI_SUCCESS) {
+        fprintf(stderr, "RSI_Start failed with error code: %d\n", err);
+        // Add more details about the error if possible
+        const char* error_msg = "Unknown error";
+        switch(err) {
+            case RSI_ERROR_SOCKET_FAILED:
+                error_msg = "Socket creation failed";
+                break;
+            case RSI_ERROR_THREAD_FAILED:
+                error_msg = "Error Thread Failed";
+                break;
+            case RSI_ERROR_INVALID_PARAM:
+                error_msg = "Invalid Params";
+                break;
+            case RSI_ERROR_TIMEOUT:
+                error_msg = "Connection timeout";
+                break;
+            case RSI_ERROR_ALREADY_RUNNING:
+                error_msg = "Already Running";
+                break;
+            case RSI_ERROR_NOT_RUNNING:
+                error_msg = "Not Running";
+                break;
+            case RSI_ERROR_UNKNOWN:
+                error_msg = "Unknown error";
+                break;
+            // Add more cases if there are other specific error codes
+        }
+        fprintf(stderr, "Error details: %s\n", error_msg);
         RSI_Cleanup(); return 1;
     }
 
@@ -91,7 +129,6 @@ int main(void)
             }
         }
 
-        SLEEP_MS(10);  // Poll at ~100 Hz
     }
 
     puts("\nStopping …");
