@@ -25,5 +25,9 @@ target_link_libraries(monitor kuka_rsi ${PLATFORM_LIBS})
 add_executable(jogger app/jogger.c)
 target_link_libraries(jogger kuka_rsi ${PLATFORM_LIBS})
 
+# Wiggle app
+add_executable(wiggle app/wiggle.c)
+target_link_libraries(wiggle kuka_rsi ${PLATFORM_LIBS})
+
 # Optional flags
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
