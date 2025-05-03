@@ -146,7 +146,7 @@ int main(void)
             printf("\rIPOC %-10u | X = %7.3f mm | %s",
                    pos.ipoc,
                    pos.x,
-                   pending_zero ? "STEP" : "ZERO");
+                   pending_zero ? "STEP " : "ZERO");
             fflush(stdout);
         }
 
