@@ -1,34 +1,43 @@
+/* wiggle.c – KUKA RSI automatic X-wiggle, 8 mm peak-to-peak
+ * 2025-05-03  (zero-pulse edition)
+ *---------------------------------------------------------------------*
+ *  • Captures start-of-program X and oscillates ±4 mm about it.        *
+ *  • Sends a “pulse” pair each time:  ±0.05 mm   →   0 mm.             *
+ *    └─ The zero on the second cycle prevents run-on after the step.   *
+ *  • 12 ms cadence  →  ≈4 mm s-¹ feed rate.                            *
+ *  • Esc key (or Ctrl-C) aborts.                                       *
+ *---------------------------------------------------------------------*/
+
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdbool.h>
 #include <signal.h>
 #include <string.h>
-#include <pthread.h>
+#include <math.h>
 
-/* ----------------------------------------------------------
- *  Cross‑platform sleep + non‑blocking keyboard utilities
- * --------------------------------------------------------*/
 #ifdef _WIN32
 #   include <conio.h>
 #   include <windows.h>
-#   define SLEEP_MS(ms) Sleep(ms)
 #   define KBHIT()      _kbhit()
 #   define GETCH()      _getch()
+#   define SLEEP_MS(ms) Sleep(ms)
 #else
 #   include <unistd.h>
 #   include <termios.h>
 #   include <fcntl.h>
 #   include <sys/select.h>
-#   define SLEEP_MS(ms) usleep((ms)*1000)
 static int kbhit(void) {
     struct timeval tv = {0};
-    fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+    fd_set         fds;
+    FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
 }
 static int getch_nonblock(void) {
-    struct termios oldt, newt; int ch = -1;
+    struct termios oldt, newt;
+    int            ch = -1;
     tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt; newt.c_lflag &= ~(ICANON | ECHO);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
     fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
     ch = getchar();
@@ -37,94 +46,28 @@ static int getch_nonblock(void) {
 }
 #   define KBHIT()      kbhit()
 #   define GETCH()      getch_nonblock()
+#   define SLEEP_MS(ms) usleep((ms)*1000)
 #endif
 
 #include "kuka_rsi.h"
 
-/* ----------------------------------------------------------
- *  Globals & synchronisation
- * --------------------------------------------------------*/
-static volatile bool g_exit            = false;
-static volatile bool g_wiggle_enabled  = false;       /* <‑‑ space‑bar toggles this */
-static pthread_mutex_t corr_mutex      = PTHREAD_MUTEX_INITIALIZER;
-static RSI_CartesianCorrection shared_correction;
-
-static double start_x      = 0.0;
-static bool   start_pos_set = false;
-
-/* ----------------------------------------------------------
- *  Real‑time callback: always returns IPOC + current correction
- * --------------------------------------------------------*/
-static void on_data_callback(const RSI_CartesianPosition* cart,
-                             const RSI_JointPosition*    joint,
-                             void*                       user_data)
-{
-    (void)cart; (void)joint; (void)user_data;
-
-    RSI_CartesianCorrection corr;
-    pthread_mutex_lock(&corr_mutex);
-    corr = shared_correction;                    /* take any pending deltas          */
-    memset(&shared_correction, 0, sizeof(shared_correction));
-    pthread_mutex_unlock(&corr_mutex);
-
-    RSI_SetCartesianCorrection(&corr);           /* reply within IPOC window         */
-}
-
-/* ----------------------------------------------------------*/
+/*─ Global exit flag ─*/
+static volatile bool g_exit = false;
 static void on_signal(int sig) { (void)sig; g_exit = true; }
 
-/* ----------------------------------------------------------
- *  Motion thread – generates ±0.1 mm steps while enabled
- * --------------------------------------------------------*/
-static void* motion_thread_fn(void* arg)
-{
-    const double   STEP  = 0.1;     /* mm per command  */
-    const double   LIMIT = 4.0;     /* ±4 mm envelope  */
-    const uint32_t INTERVAL_MS = 32; /* send every ~32 ms */
-    bool increasing = true;
+/*─ Dummy mandatory callback ─*/
+static void on_data(const RSI_CartesianPosition* c,
+                    const RSI_JointPosition*    j,
+                    void*                       ud)
+{ (void)c; (void)j; (void)ud; }
 
-    while (!g_exit) {
-        if (!g_wiggle_enabled) {        /* paused – just idle briefly            */
-            SLEEP_MS(INTERVAL_MS);
-            continue;
-        }
+/*─ Helper ─*/
+static void zero_correction(RSI_CartesianCorrection* c)
+{ memset(c, 0, sizeof(*c)); }
 
-        RSI_CartesianPosition pos;
-        if (RSI_GetCartesianPosition(&pos) != RSI_SUCCESS) {
-            SLEEP_MS(INTERVAL_MS);
-            continue;                   /* keep trying until data arrives        */
-        }
-
-        if (!start_pos_set) {           /* remember initial X once               */
-            start_x        = pos.x;
-            start_pos_set  = true;
-        }
-
-        double rel_x = pos.x - start_x;
-        RSI_CartesianCorrection delta = {0};
-
-        if (increasing) {
-            if (rel_x <  LIMIT - 0.05) delta.x =  STEP;
-            else                       increasing = false;
-        } else {
-            if (rel_x > -LIMIT + 0.05) delta.x = -STEP;
-            else                       increasing = true;
-        }
-
-        if (delta.x != 0.0) {
-            pthread_mutex_lock(&corr_mutex);
-            shared_correction.x = delta.x;
-            pthread_mutex_unlock(&corr_mutex);
-        }
-
-        SLEEP_MS(INTERVAL_MS);
-    }
-    return NULL;
-}
-
-/* ----------------------------------------------------------*/
 int main(void)
 {
+    /*──────────────────── 1.  RSI start-up ────────────────────*/
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
 
@@ -135,92 +78,92 @@ int main(void)
         .verbose    = true
     };
 
-    puts("=== KUKA RSI wiggle utility ===");
-    printf("Initializing RSI with configuration:\n");
-    printf("  Local IP: %s\n", cfg.local_ip);
-    printf("  Local Port: %d\n", cfg.local_port);
-    printf("  Timeout: %d ms\n", cfg.timeout_ms);
-    printf("  Verbose mode: %s\n", cfg.verbose ? "Enabled" : "Disabled");
-
-    if (RSI_Init(&cfg) != RSI_SUCCESS) {
-        fprintf(stderr, "RSI_Init failed\n");
-        return 1;
-    }
-
-    if (RSI_SetCallbacks(on_data_callback, NULL, NULL) != RSI_SUCCESS) {
-        fprintf(stderr, "RSI_SetCallbacks failed\n");
+    puts("Starting RSI 8 mm wiggle (zero-pulse edition) …");
+    if (RSI_Init(&cfg) != RSI_SUCCESS ||
+        RSI_SetCallbacks(on_data, NULL, NULL) != RSI_SUCCESS ||
+        RSI_Start() != RSI_SUCCESS)
+    {
+        fprintf(stderr, "RSI start-up failed\n");
         RSI_Cleanup();
         return 1;
     }
 
-    RSI_Error err = RSI_Start();
-    if (err != RSI_SUCCESS) {
-        fprintf(stderr, "RSI_Start failed with error code: %d\n", err);
-        const char* error_msg = "Unknown error";
-        switch(err) {
-            case RSI_ERROR_SOCKET_FAILED:     error_msg = "Socket creation failed"; break;
-            case RSI_ERROR_THREAD_FAILED:     error_msg = "Thread creation failed"; break;
-            case RSI_ERROR_INVALID_PARAM:     error_msg = "Invalid parameter";      break;
-            case RSI_ERROR_TIMEOUT:           error_msg = "Connection timeout";     break;
-            case RSI_ERROR_ALREADY_RUNNING:   error_msg = "Already running";        break;
-            case RSI_ERROR_NOT_RUNNING:       error_msg = "Not running";            break;
-            case RSI_ERROR_UNKNOWN:           error_msg = "Unknown error";          break;
-        }
-        fprintf(stderr, "Error details: %s\n", error_msg);
-        RSI_Cleanup();
-        return 1;
-    }
+    /*──────────────────── 2.  Motion parameters ───────────────*/
+    const double STEP_MM   = 0.1;   /* one pulse = 0.05 mm */
+    const double TRAVEL_MM = 1.0;    /* ±4 mm about start    */
+    const int    LOOP_MS   = 0;     /* ≈3 RSI cycles        */
+    const double EPS_MM    = STEP_MM / 2.0;  /* flip buffer   */
 
-    pthread_t motion_thread;
-    if (pthread_create(&motion_thread, NULL, motion_thread_fn, NULL) != 0) {
-        fprintf(stderr, "motion thread creation failed\n");
-        g_exit = true;
-    }
+    RSI_CartesianPosition pos  = {0};
+    RSI_CartesianCorrection corr, zero_corr;
+    zero_correction(&corr);
+    zero_correction(&zero_corr);
 
-    puts("Press <space> to start/stop wiggle, Esc or Ctrl‑C to quit.");
+    double start_x      = NAN;
+    double lower_limit  = 0.0;
+    double upper_limit  = 0.0;
+    bool   dir_positive = false;  /* start toward –X */
+    bool   pending_zero = false;  /* track pulse phase */
+
+    puts("→ Motion begins automatically.  Press Esc or Ctrl-C to quit.");
+
+    /*──────────────────── 3.  Main loop ───────────────────────*/
     while (!g_exit) {
 
-        /* ---- status display ------------------------------------------------*/
-        RSI_CartesianPosition pos;
         if (RSI_GetCartesianPosition(&pos) == RSI_SUCCESS) {
-            printf("\rIPOC %6u | X: %7.3f mm | Wiggle: %s ",
-                   pos.ipoc, pos.x,
-                   g_wiggle_enabled ? "ON " : "OFF");
+
+            if (isnan(start_x)) {            /* latch reference */
+                start_x     = pos.x;
+
+                lower_limit = 441.0;;
+                upper_limit = 449.0;
+                printf("Reference X: %.3f mm  →  [%.3f … %.3f]\n",
+                       start_x, lower_limit, upper_limit);
+            }
+
+            /*── Decide correction to send this cycle ──*/
+            if (pending_zero) {
+                /* second half of pulse: zero */
+                /*RSI_SetCartesianCorrection(&zero_corr); */
+                pending_zero = false;
+            } else {
+                /* first half: ±STEP_MM, then tag for zero next time */
+                if (pos.x < lower_limit) {
+                    dir_positive = true;
+                    printf("At lower limit: %.3f\n", lower_limit);
+                }
+                else if (pos.x > upper_limit) {
+                    dir_positive = false;
+                    printf("At upper limit: %.3f\n", upper_limit);
+                }
+
+                corr.x = dir_positive ? STEP_MM : -STEP_MM;
+                RSI_SetCartesianCorrection(&corr);
+                pending_zero = true;
+            }
+
+            /*── Telemetry ──*/
+            printf("\rIPOC %-10u | X = %7.3f mm | %s",
+                   pos.ipoc,
+                   pos.x,
+                   pending_zero ? "STEP" : "ZERO");
             fflush(stdout);
         }
 
-        /* ---- handle keyboard ----------------------------------------------*/
-        if (KBHIT()) {
-            int ch = GETCH();
-            switch (ch) {
-                case ' ':   /* toggle wiggle */
-                    g_wiggle_enabled = !g_wiggle_enabled;
-                    printf("\n>>> Wiggle %s\n",
-                           g_wiggle_enabled ? "ENABLED" : "DISABLED");
-
-                    if (!g_wiggle_enabled) {  /* clear any queued correction   */
-                        pthread_mutex_lock(&corr_mutex);
-                        memset(&shared_correction, 0, sizeof(shared_correction));
-                        pthread_mutex_unlock(&corr_mutex);
-                    }
-                    break;
-
-                case 27:    /* Esc */
-                    g_exit = true;
-                    break;
-
-                default:
-                    break;
-            }
+        /* Esc key abort */
+        if (KBHIT() && GETCH() == 27) {
+            puts("\nEsc pressed – exiting.");
+            g_exit = true;
         }
 
-        SLEEP_MS(50);  /* reduce CPU load in the UI loop */
+        SLEEP_MS(LOOP_MS);
     }
 
-    /* ----- cleanup ---------------------------------------------------------*/
-    pthread_join(motion_thread, NULL);
+    /*──────────────────── 4.  Shutdown ────────────────────────*/
+    RSI_SetCartesianCorrection(&zero_corr);  /* make sure we leave zeroed */
+    puts("\nStopping …");
     RSI_Stop();
     RSI_Cleanup();
-    puts("\nShutdown complete.");
+    puts("Done.");
     return 0;
 }
